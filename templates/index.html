@@ -1,0 +1,199 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Toxicity Database</title>
+
+  <link rel="stylesheet" href="https://cdn.datatables.net/1.13.8/css/jquery.dataTables.min.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.css">
+
+  <style>
+    th, td { white-space: nowrap; }
+    .filter-row input, .filter-row select { width: 95%; }
+  </style>
+</head>
+
+<body>
+  <div id="summary" style="margin-bottom:12px;">
+    <b>Total rows:</b> <span id="s_total_rows">-</span> |
+    <b>Unique chemicals:</b> <span id="s_total_chems">-</span>
+    <div id="s_classes" style="margin-top:6px; font-size:13px;"></div>
+  </div>
+
+  <div style="margin-bottom:12px;">
+    <b>LC50 (mM):</b>
+    <span id="lc50_label">-</span>
+    <div id="lc50_slider" style="margin-top:8px; max-width:420px;"></div>
+  </div>
+
+  <table id="toxTable" class="display" style="width:100%">
+    <thead>
+      <tr class="filter-row">
+        <th><input id="f_chemical_name" placeholder="Chemical name"></th>
+
+        <th>
+          <select id="f_class_of_chemical">
+            <option value="">All</option>
+          </select>
+        </th>
+
+        <th></th>
+
+        <th>
+          <select id="f_exposure_time">
+            <option value="">All</option>
+          </select>
+        </th>
+
+        <th>
+          <select id="f_media_used">
+            <option value="">All</option>
+          </select>
+        </th>
+
+        <th></th>
+        <th></th>
+
+        <th>
+          <select id="f_hardware">
+            <option value="">All</option>
+          </select>
+        </th>
+
+        <th><input id="f_source" placeholder="Source"></th>
+        <th></th>
+      </tr>
+
+      <tr>
+        <th>Chemical Name</th>
+        <th>Class of chemical</th>
+        <th>LC50 (mM)</th>
+        <th>Exposure Time</th>
+        <th>Media Used</th>
+        <th>Sample Size</th>
+        <th>Conc. Range (mM)</th>
+        <th>Hardware</th>
+        <th>Source</th>
+        <th>Source Link</th>
+      </tr>
+    </thead>
+  </table>
+
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <script src="https://cdn.datatables.net/1.13.8/js/jquery.dataTables.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.js"></script>
+
+  <script>
+    let lc50Min = null;
+    let lc50Max = null;
+    let sliderReady = false;
+
+    function loadSummary() {
+      fetch("/api/summary")
+        .then(r => r.json())
+        .then(s => {
+          document.getElementById("s_total_rows").textContent = s.total_rows;
+          document.getElementById("s_total_chems").textContent = s.total_unique_chemicals;
+
+          const lines = (s.class_counts || []).map(x => `${x.class}: ${x.count}`).join(" | ");
+          document.getElementById("s_classes").textContent = lines ? ("Classes: " + lines) : "";
+        });
+    }
+
+    function fillSelect(id, values) {
+      const sel = document.getElementById(id);
+      values.forEach(v => {
+        const opt = document.createElement("option");
+        opt.value = v;
+        opt.textContent = v;
+        sel.appendChild(opt);
+      });
+    }
+
+    function loadDropdowns() {
+      fetch("/api/options")
+        .then(r => r.json())
+        .then(o => {
+          fillSelect("f_class_of_chemical", o.class_of_chemical || []);
+          fillSelect("f_exposure_time", o.exposure_time || []);
+          fillSelect("f_media_used", o.media_used || []);
+          fillSelect("f_hardware", o.hardware || []);
+        });
+    }
+
+    function initLc50Slider(table) {
+      fetch("/api/ranges")
+        .then(r => r.json())
+        .then(rng => {
+          const min = rng.lc50_mm.min;
+          const max = rng.lc50_mm.max;
+
+          if (min === max) {
+            document.getElementById("lc50_label").textContent = `${min}`;
+            return;
+          }
+
+          const slider = document.getElementById("lc50_slider");
+          noUiSlider.create(slider, {
+            start: [min, max],
+            connect: true,
+            range: { min: min, max: max },
+            step: (max - min) / 200
+          });
+
+          function updateLabel(values) {
+            const a = parseFloat(values[0]).toFixed(3);
+            const b = parseFloat(values[1]).toFixed(3);
+            document.getElementById("lc50_label").textContent = `${a} to ${b}`;
+          }
+
+          slider.noUiSlider.on("update", (values) => {
+            lc50Min = values[0];
+            lc50Max = values[1];
+            updateLabel(values);
+          });
+
+          slider.noUiSlider.on("change", () => {
+            sliderReady = true;
+            table.draw();
+          });
+
+          sliderReady = true;
+          updateLabel([min, max]);
+        });
+    }
+
+    document.addEventListener("DOMContentLoaded", () => {
+      loadSummary();
+      loadDropdowns();
+
+      const table = $("#toxTable").DataTable({
+        processing: true,
+        serverSide: true,
+        pageLength: 15,
+        lengthMenu: [[15, 50, 200, 2000], [15, 50, 200, 2000]],
+        ajax: {
+          url: "/api/tox",
+          data: function(d) {
+            d.chemical_name = $("#f_chemical_name").val();
+            d.class_of_chemical = $("#f_class_of_chemical").val();
+            d.exposure_time = $("#f_exposure_time").val();
+            d.media_used = $("#f_media_used").val();
+            d.hardware = $("#f_hardware").val();
+            d.source = $("#f_source").val();
+
+            d.lc50_min = sliderReady ? lc50Min : "";
+            d.lc50_max = sliderReady ? lc50Max : "";
+          }
+        }
+      });
+
+      $("#f_chemical_name, #f_source").on("keyup", function() { table.draw(); });
+      $("#f_class_of_chemical, #f_exposure_time, #f_media_used, #f_hardware")
+        .on("change", function() { table.draw(); });
+
+      initLc50Slider(table);
+    });
+  </script>
+</body>
+</html>
